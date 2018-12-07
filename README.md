@@ -1,4 +1,4 @@
-# TrueWallet
+# TrueWalletAPI
 
 ---
 
@@ -28,3 +28,8 @@ func main() {
 }
 
 ```
+
+---
+**License**
+Resty released under MIT license, refer LICENSE file.
+---
