@@ -6,6 +6,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"reflect"
 	"strconv"
@@ -35,7 +36,7 @@ var headers = map[string]string{
 	"User-Agent":   "okhttp/3.8.0",
 }
 
-type TrueWallet struct {
+type Wallet struct {
 	username     string
 	password     string
 	passwordHash string
@@ -43,12 +44,36 @@ type TrueWallet struct {
 	Token        string
 }
 
+type Error struct {
+	Code    int
+	Message string
+}
+
+const (
+	RequestError = 1
+	LoginError   = 2
+	TokenError   = 3
+	UnknownError = 4
+)
+
+func NewError(code int, message string) *Error {
+	return &Error{
+		Code:    code,
+		Message: message,
+	}
+}
+
+const (
+	StatusSuccess = 1
+	StatusFail    = 0
+)
+
 type Activity struct {
 	ReportID string `json:"reportID"`
 	Date     string `json:"text2En"`
 	Money    string `json:"text4En"`
 	Phone    string `json:"text5En"`
-	Action string `json:"originalAction"`
+	Action   string `json:"originalAction"`
 }
 
 type Transaction struct {
@@ -61,6 +86,7 @@ type Transaction struct {
 }
 
 type Profile struct {
+	Code string `json:"code"`
 	Data struct {
 		Occupation         string `json:"occupation"`
 		Birthdate          string `json:"birthdate"`
@@ -86,35 +112,30 @@ type Profile struct {
 	} `json:"data"`
 }
 
-func New(id string, password string, options ...interface{}) *TrueWallet {
+func New(id string, password string, options ...interface{}) (*Wallet, *Error) {
 	var loginType string
 	if len(options) >= 1 {
 		loginType = options[0].(string)
 	} else {
 		loginType = "mobile"
 	}
-
 	h := sha1.New()
 	h.Write([]byte(id + password))
-	wallet := TrueWallet{
+	wallet := Wallet{
 		username:     id,
 		password:     password,
 		passwordHash: hex.EncodeToString(h.Sum(nil)),
 		loginType:    loginType,
 	}
-	in := wallet.GetToken()
-	var raw map[string]interface{}
-	json.Unmarshal(in, &raw)
-	data := raw["data"].(map[string]interface{})
-	if len(data) == 0 {
-		log.Fatal("username or password incorret")
-		return nil
+	t, err := wallet.GetToken()
+	if err != nil {
+		return &wallet, err
 	}
-	wallet.Token = data["accessToken"].(string)
-	return &wallet
+	wallet.Token = t
+	return &wallet, nil
 }
 
-func (w *TrueWallet) GetToken() []byte {
+func (w *Wallet) GetToken() (string, *Error) {
 	url := host + enpointSignin
 	resp, err := resty.R().
 		SetBody(map[string]interface{}{
@@ -125,27 +146,32 @@ func (w *TrueWallet) GetToken() []byte {
 		SetHeaders(headers).
 		Post(url)
 	if err != nil {
-		log.Fatalln(err)
-		return nil
+		return "", NewError(RequestError, err.Error())
 	}
-	return resp.Body()
+	in := resp.Body()
+	var raw map[string]interface{}
+	json.Unmarshal(in, &raw)
+	data := raw["data"].(map[string]interface{})
+	if len(data) == 0 {
+		return "", NewError(LoginError, "User not found.")
+	}
+	return data["accessToken"].(string), nil
 }
 
-func (w *TrueWallet) GetProfile() *Profile {
+func (w *Wallet) GetProfile() (*Profile, *Error) {
 	url := host + enpointProfile + w.Token
 	resp, err := resty.R().
 		SetHeaders(headers).
 		Get(url)
 	if err != nil {
-		log.Fatalln(err)
-		return nil
+		return nil, NewError(RequestError, err.Error())
 	}
 	var profile Profile
 	json.Unmarshal(resp.Body(), &profile)
-	return &profile
+	return &profile, nil
 }
 
-func (w *TrueWallet) GetRawTransaction(options ...interface{}) []byte {
+func (w *Wallet) GetRawTransaction(options ...interface{}) []byte {
 	today := time.Now().Format("2006-01-02")
 	tomorrow := time.Now().AddDate(0, 0, +1).Format("2006-01-02")
 	size := len(options)
@@ -183,24 +209,35 @@ func (w *TrueWallet) GetRawTransaction(options ...interface{}) []byte {
 	} else {
 		url.WriteString("/?startDate=" + today + "&endDate=" + tomorrow)
 	}
-
 	resp, err := resty.R().
 		SetHeaders(headers).
 		Get(url.String())
 	if err != nil {
-		log.Fatalln(err)
 		return nil
 	}
 	return resp.Body()
 }
 
-func (w *TrueWallet) GetTransaction(options ...interface{}) *Transaction {
+func (w *Wallet) GetTransaction(options ...interface{}) (*Transaction, *Error) {
+	if w.Token == "" {
+		return nil, NewError(TokenError, "Token not found.")
+	}
 	var transaction Transaction
 	json.Unmarshal(w.GetRawTransaction(options...), &transaction)
-	return &transaction
+	var err *Error
+	code := transaction.Code
+	switch transaction.Code {
+	case "20000":
+		err = nil
+	case "40000":
+		err = NewError(TokenError, "Token not found.")
+	default:
+		err = NewError(UnknownError, "Unknown Error Code "+code)
+	}
+	return &transaction, err
 }
 
-func (w *TrueWallet) GetTransactionByPhone(options ...interface{}) []Activity {
+func (w *Wallet) GetActivities(options ...interface{}) ([]Activity, *Error) {
 	act := []Activity{}
 	var start string
 	var end string
@@ -225,123 +262,109 @@ func (w *TrueWallet) GetTransactionByPhone(options ...interface{}) []Activity {
 	} else {
 		log.Fatalln("Argument is invalid")
 	}
-
-	transaction := w.GetTransaction(start, end, 1, 1, "transfer", "creditor")
-	n := 10
+	transaction, err := w.GetTransaction(start, end, 1, 1, "transfer")
+	if err != nil {
+		return act, err
+	}
+	for _, activity := range transaction.Data.Activities {
+		if strings.Replace(activity.Phone, "-", "", -1) == phone {
+			act = append(act, activity)
+		}
+	}
+	n := 8
 	limit := transaction.Data.Total/n + 1
 	var wg sync.WaitGroup
 	for i := 1; i <= n; i++ {
 		wg.Add(1)
-		go w.getTransactionWorker(&wg, &act, start, end, limit, i, phone)
+		go func(wg *sync.WaitGroup, act *[]Activity, start, end string, page int) {
+			t, _ := w.GetTransaction(start, end, limit, page, "transfer")
+			for _, activity := range t.Data.Activities {
+				if strings.Replace(activity.Phone, "-", "", -1) == phone {
+					*act = append(*act, activity)
+				}
+			}
+			wg.Done()
+		}(&wg, &act, start, end, i)
 	}
 	wg.Wait()
-	return act
+	return act, nil
 }
 
-func (w *TrueWallet) getTransactionWorker(wg *sync.WaitGroup, act *[]Activity, start string, end string, limit int, page int, phone string) {
-	transaction := w.GetTransaction(start, end, limit, page, "transfer", "creditor")
+func (w *Wallet) GetLastTransfer(phone string, money float32, options ...interface{}) (*Activity, *Error) {
+	if money < 0 {
+		log.Fatalln("Errer money must be positive.")
+	}
+	var start string
+	var end string
+	if len(options) > 0 {
+		start = options[0].(string)
+		t, err := time.Parse("2006-01-02", options[1].(string))
+		if err != nil {
+			end = t.AddDate(0, 0, +1).Format("2006-01-02")
+		}
+	} else {
+		currentTime := time.Now()
+		start = currentTime.Format("2006-01-02")
+		end = currentTime.AddDate(0, 0, +1).Format("2006-01-02")
+	}
+	m := fmt.Sprintf("+%.2f", money)
+	limit := 30
+	transaction, err := w.GetTransaction(start, end, limit, 1, "transfer", "creditor")
+	if err != nil {
+		return nil, err
+	}
 	for _, activity := range transaction.Data.Activities {
-		if strings.Replace(activity.Phone, "-", "", -1) == phone {
-			*act = append(*act, activity)
+		if strings.Replace(activity.Phone, "-", "", -1) == phone && activity.Money == m {
+			return &activity, nil
 		}
 	}
-	wg.Done()
-}
-
-func (w *TrueWallet) CheckTransaction(phone string, money string) *Activity {
-	currentTime := time.Now()
-	today := currentTime.Format("2006-01-02")
-	tomorrow := currentTime.AddDate(0, 0, +1).Format("2006-01-02")
-	act := []Activity{}
-	w.createCheckTransactionWorker(&act, today, tomorrow, phone, money) // check today
-	if len(act) == 0 {
-		yesterday := currentTime.AddDate(0, 0, -1).Format("2006-01-02")
-		w.createCheckTransactionWorker(&act, yesterday, today, phone, money) //check yesterday
-	}
-	size := len(act)
-	if size > 1 {
-		t, _ := time.Parse("02/01/06 15:04", act[0].Date)
-		a := act[0]
-		for i := 1; i < size; i++ {
-			t2, _ := time.Parse("02/01/06 15:04", act[i].Date)
-			if t.Unix() < t2.Unix() {
-				a = act[i]
+	for i := 2; i <= transaction.Data.TotalPage; i++ {
+		transaction, err = w.GetTransaction(start, end, limit, i, "transfer", "creditor")
+		if err != nil {
+			return nil, err
+		}
+		for _, activity := range transaction.Data.Activities {
+			if strings.Replace(activity.Phone, "-", "", -1) == phone && activity.Money == m {
+				return &activity, nil
 			}
 		}
-		return &a
-	} else if size == 1 {
-		return &act[0]
 	}
-	return nil
+	return nil, nil
 }
 
-func (w *TrueWallet) createCheckTransactionWorker(act *[]Activity, start string, end string, phone string, money string) {
-	limit := 27
-	transaction := w.GetTransaction(start, end, limit, 1, "transfer", "creditor")
-	for _, activity := range transaction.Data.Activities {
-		if strings.Replace(activity.Phone, "-", "", -1) == phone && activity.Money == money {
-			*act = append(*act, activity)
-			return
-		}
-	}
-	n := 10
-	limit = transaction.Data.Total/n + 1
-	var wg sync.WaitGroup
-	for i := 0; i <= n; i++ {
-		wg.Add(1)
-		go w.checkTransactionWorker(&wg, act, start, end, limit, i, phone, money)
-	}
-	wg.Wait()
-}
-
-func (w *TrueWallet) checkTransactionWorker(wg *sync.WaitGroup, act *[]Activity, start string, end string, limit int, page int, phone string, money string) {
-	transaction := w.GetTransaction(start, end, limit, page, "transfer", "creditor")
-	for _, activity := range transaction.Data.Activities {
-		if strings.Replace(activity.Phone, "-", "", -1) == phone && activity.Money == money {
-			*act = append(*act, activity)
-			wg.Done()
-			return
-		}
-	}
-	wg.Done()
-}
-
-func (w *TrueWallet) GetReport(id string) []byte {
+func (w *Wallet) GetReport(id string) ([]byte, *Error) {
 	url := host + enpointChecktran + id + "/detail/" + w.Token
 	resp, err := resty.R().
 		SetHeaders(headers).
 		Get(url)
 	if err != nil {
-		log.Fatalln(err)
-		return nil
+		return nil, NewError(RequestError, err.Error())
 	}
-	return resp.Body()
+	return resp.Body(), nil
 }
 
-func (w *TrueWallet) GetBalance() string {
+func (w *Wallet) GetBalance() (string, *Error) {
 	url := host + enpointProfile + "balance/" + w.Token
 	resp, err := resty.R().
 		SetHeaders(headers).
 		Get(url)
 	if err != nil {
-		log.Fatalln(err)
-		return ""
+		return "", NewError(RequestError, err.Error())
 	}
 	var raw map[string]interface{}
 	json.Unmarshal(resp.Body(), &raw)
 	data := raw["data"].(map[string]interface{})
-	return data["currentBalance"].(string)
+	return data["currentBalance"].(string), nil
 }
 
-func (w *TrueWallet) TopupMoney(cashcard string) []byte {
+func (w *Wallet) TopupMoney(cashcard string) ([]byte, *Error) {
 	timeStamp := strconv.FormatInt(time.Now().Unix(), 10)
 	url := host + enpointTopup + timeStamp + "/" + w.Token + "/cashcard/" + cashcard
 	resp, err := resty.R().
 		SetHeaders(headers).
 		Post(url)
 	if err != nil {
-		log.Fatalln(err)
-		return nil
+		return nil, NewError(RequestError, err.Error())
 	}
-	return resp.Body()
+	return resp.Body(), nil
 }
