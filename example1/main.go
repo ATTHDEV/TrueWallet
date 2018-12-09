@@ -7,10 +7,14 @@ import (
 )
 
 func main() {
-	wallet := TrueWallet.New("xxxxxxxxxx", "xxxx") //put you mobile number and pin
+	wallet, err := TrueWallet.New("xxxxxxxxxx", "xxxx") //put you mobile number and pin
 
-	fmt.Println("this is last 50 transaction for today")
+	if err != nil {
 
-	transaction := wallet.GetTransaction()
-	fmt.Println(transaction)
+		fmt.Println("this is last 100 transaction for today")
+
+		transaction := wallet.GetTransaction(100)
+		fmt.Println(transaction)
+
+	}
 }
