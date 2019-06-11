@@ -43,8 +43,6 @@ func main() {
 ```
 
 ---
----
-
 Example02
 ```
 package main
