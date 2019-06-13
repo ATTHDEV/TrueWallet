@@ -19,6 +19,9 @@ func main() {
 		panic(err)
 	}
 
+	// Login for receive access token
+	wallet.Login()
+
 	fmt.Println("this is activities for 0812345678 from 2018-12-01 to 2018-12-02")
 	fmt.Println(wallet.GetActivities("0812345678", "2018-12-01", "2018-12-02"))
 }

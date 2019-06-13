@@ -232,7 +232,7 @@ func (w *Wallet) GetOtp() (string, *Error) {
 		}).
 		SetHeaders(w.Headers).
 		Post(host + enpointOtp)
-
+	fmt.Println(resp.String())
 	if err != nil {
 		return "", NewError(UnknownError, "unknow error.")
 	}
@@ -400,6 +400,7 @@ func (w *Wallet) GetRawTransaction(options ...interface{}) []byte {
 	resp, err := resty.R().
 		SetHeaders(w.Headers).
 		Get(url.String())
+	fmt.Println(resp.String())
 	if err != nil {
 		return nil
 	}
@@ -544,6 +545,7 @@ func (w *Wallet) GetBalance() (string, *Error) {
 	resp, err := resty.R().
 		SetHeaders(headers).
 		Get(url)
+	fmt.Println(resp.String())
 	if err != nil {
 		return "", NewError(RequestError, err.Error())
 	}
